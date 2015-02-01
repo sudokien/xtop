@@ -8,7 +8,6 @@ import (
 	"os"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/jroimartin/gocui"
@@ -20,17 +19,17 @@ func main() {
 	help := `A top-like tool to monitor responses from a target URL. This tool periodically collects and prints out response statuses and a custom response header received from the url.`
 
 	app := kingpin.New(name, help)
-	app.Version("0.0.1")
+	app.Version("0.0.2")
 
 	var (
-		url        = app.Arg("url", "target URL").Required().URL()
-		concurrent = app.Flag("concurrent", "number of concurrent requests sent in one batch").Short('c').Default("3").Int()
-		header     = app.Flag("header", "custom header name to collect").Short('x').Default("X-Server").String()
+		url         = app.Arg("url", "target URL").Required().URL()
+		concurrency = app.Flag("concurrency", "max number of concurrent requests").Short('c').Default("10").Int()
+		header      = app.Flag("header", "custom header name to collect").Short('x').Default("X-Server").String()
 	)
 
 	kingpin.MustParse(app.Parse(os.Args[1:]))
 
-	x := NewXTop((*url).String(), *concurrent, *header)
+	x := NewXTop((*url).String(), *concurrency, *header)
 	x.Start()
 }
 
@@ -71,18 +70,25 @@ func appendIfMissing(a []string, item string) []string {
 
 // XTop is the main struct
 type XTop struct {
-	URL        string
-	Concurrent int
-	Header     string
+	URL         string
+	Concurrency int
+	Header      string
 
 	TotalRequestsSent int
 	StatusMap         map[string]int
-	ServerMap         map[string]int
+	HeaderMap         map[string]int
 	G                 *gocui.Gui
 }
 
+// Data is the transfer object for communication from our background worker threads
+type Data struct {
+	RespStatus string
+	RespHeader string
+	Error      error
+}
+
 // NewXTop returns a new XTop instance
-func NewXTop(url string, concurrent int, header string) XTop {
+func NewXTop(url string, concurrency int, header string) XTop {
 	url = strings.ToLower(url)
 	if strings.Index(url, "http://") == -1 && strings.Index(url, "https://") == -1 {
 		url = "http://" + url
@@ -90,12 +96,12 @@ func NewXTop(url string, concurrent int, header string) XTop {
 
 	x := XTop{}
 	x.URL = url
-	x.Concurrent = concurrent
+	x.Concurrency = concurrency
 	x.Header = header
 	x.StatusMap = make(map[string]int)
-	x.ServerMap = make(map[string]int)
+	x.HeaderMap = make(map[string]int)
 
-	var err error = nil
+	var err error
 	g := gocui.NewGui()
 	if err := g.Init(); err != nil {
 		panic(err)
@@ -112,14 +118,14 @@ func NewXTop(url string, concurrent int, header string) XTop {
 	return x
 }
 
-// Run the app
+// Start starts everything
 func (r *XTop) Start() {
 	defer r.G.Close()
 
-	// One thread (that spawns several goroutines) to send requests and collect data
+	// Collect data
 	go r.run()
 
-	// One thread to periodically print out results to the screen
+	// Periodically print out results to the screen
 	go r.updateView()
 
 	// Main loop of gocui
@@ -128,52 +134,49 @@ func (r *XTop) Start() {
 	}
 }
 
-// run has an infinite loop, spawning several goroutines to send http requests and collect data
+// run spawns multiple worker goroutines making requests to target URL in background
+// then it keeps listening for results sent back from those workers
 func (r *XTop) run() {
+	N := r.Concurrency       // max concurrency
+	ch := make(chan Data, N) // channel for workers to send back results
 
-	var (
-		status, header string
-		wg             sync.WaitGroup
-	)
-
-	for { // loop forever, send N requests each loop
-		for i := 0; i < r.Concurrent; i++ {
-			wg.Add(1)
-			go func() {
-				// decrement the counter when the goroutine completes.
-				defer wg.Done()
-
-				r.TotalRequestsSent++
-
+	// Spawn worker goroutines
+	for i := 0; i < N; i++ {
+		go func(ch chan Data) {
+			for {
 				resp, err := http.Get(r.URL)
 				if err != nil {
-					// todo better error handling
-					return
+					ch <- Data{Error: err}
+					continue
 				}
+				ch <- Data{resp.Status, resp.Header.Get(r.Header), nil}
+			}
+		}(ch)
+	}
 
-				// must close body after finish
-				defer resp.Body.Close()
+	// Collecting results from workers
+	for {
+		data := <-ch
+		r.TotalRequestsSent++
 
-				// collect response status code
-				status = resp.Status
-				_, exist := r.StatusMap[status]
-				if exist {
-					r.StatusMap[status]++
-				} else {
-					r.StatusMap[status] = 1
-				}
-
-				// collect custom response header
-				header = resp.Header.Get(r.Header)
-				_, exist = r.ServerMap[header]
-				if exist {
-					r.ServerMap[header]++
-				} else {
-					r.ServerMap[header] = 1
-				}
-			}()
+		if data.Error != nil {
+			// TODO collect errors
+			continue
 		}
-		wg.Wait()
+
+		s := data.RespStatus
+		if _, exist := r.StatusMap[s]; exist {
+			r.StatusMap[s]++
+		} else {
+			r.StatusMap[s] = 1
+		}
+
+		h := data.RespHeader
+		if _, exist := r.HeaderMap[h]; exist {
+			r.HeaderMap[h]++
+		} else {
+			r.HeaderMap[h] = 1
+		}
 	}
 }
 
@@ -208,10 +211,10 @@ func (r *XTop) updateView() {
 func (r *XTop) display(v io.Writer) error {
 
 	output := fmt.Sprintf("Target: %s\n", r.URL)
-	output += fmt.Sprintf("Header to check: %s\n", r.Header)
-	output += fmt.Sprintf("Concurrent requests: %d\n\n", r.Concurrent)
+	output += fmt.Sprintf("Header: %s\n", r.Header)
+	output += fmt.Sprintf("Max concurrency: %d\n\n", r.Concurrency)
 
-	// Statuses
+	// Response status
 	sorted := sortMapByValue(r.StatusMap)
 	output += fmt.Sprintf("=== Response status ===\n")
 	for _, v := range sorted {
@@ -222,10 +225,10 @@ func (r *XTop) display(v io.Writer) error {
 	}
 	output += fmt.Sprintf("\n")
 
-	// Custom header
+	// Response header
 	a := []string{}
 
-	for k := range r.ServerMap {
+	for k := range r.HeaderMap {
 		a = append(a, k)
 	}
 	sort.Strings(a)
@@ -233,8 +236,8 @@ func (r *XTop) display(v io.Writer) error {
 	output += fmt.Sprintf("=== Response header %s ===\n", r.Header)
 	for i, v := range a {
 		output += fmt.Sprintf("%6s %8s %3d %s\n",
-			fmt.Sprintf("[%d%s]", r.ServerMap[v]*100/r.TotalRequestsSent, "%%"),
-			fmt.Sprintf("[%d/%d]", r.ServerMap[v], r.TotalRequestsSent),
+			fmt.Sprintf("[%d%s]", r.HeaderMap[v]*100/r.TotalRequestsSent, "%%"),
+			fmt.Sprintf("[%d/%d]", r.HeaderMap[v], r.TotalRequestsSent),
 			i+1,
 			v)
 	}
