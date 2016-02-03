@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/jroimartin/gocui"
-	"gopkg.in/alecthomas/kingpin.v1"
+	"github.com/solidfoxrock/xtop/Godeps/_workspace/src/github.com/jroimartin/gocui"
+	"github.com/solidfoxrock/xtop/Godeps/_workspace/src/gopkg.in/alecthomas/kingpin.v1"
 )
 
 func main() {
@@ -109,7 +109,7 @@ func NewXTop(url string, concurrency int, header string) XTop {
 	g.FgColor = gocui.ColorGreen
 	g.SetLayout(x.layout)
 	if err = g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, func(g *gocui.Gui, v *gocui.View) error {
-		return gocui.ErrorQuit
+		return gocui.Quit
 	}); err != nil {
 		log.Panicln(err)
 	}
@@ -129,7 +129,7 @@ func (r *XTop) Start() {
 	go r.updateView()
 
 	// Main loop of gocui
-	if err := r.G.MainLoop(); err != nil && err != gocui.ErrorQuit {
+	if err := r.G.MainLoop(); err != nil && err != gocui.Quit {
 		log.Panicln(err)
 	}
 }
