@@ -119,37 +119,37 @@ func NewXTop(url string, concurrency int, header string) XTop {
 }
 
 // Start starts everything
-func (r *XTop) Start() {
-	defer r.G.Close()
+func (x *XTop) Start() {
+	defer x.G.Close()
 
 	// Collect data
-	go r.run()
+	go x.run()
 
 	// Periodically print out results to the screen
-	go r.updateView()
+	go x.updateView()
 
 	// Main loop of gocui
-	if err := r.G.MainLoop(); err != nil && err != gocui.Quit {
+	if err := x.G.MainLoop(); err != nil && err != gocui.Quit {
 		log.Panicln(err)
 	}
 }
 
 // run spawns multiple worker goroutines making requests to target URL in background
 // then it keeps listening for results sent back from those workers
-func (r *XTop) run() {
-	N := r.Concurrency       // max concurrency
+func (x *XTop) run() {
+	N := x.Concurrency       // max concurrency
 	ch := make(chan Data, N) // channel for workers to send back results
 
 	// Spawn worker goroutines
 	for i := 0; i < N; i++ {
 		go func(ch chan Data) {
 			for {
-				resp, err := http.Get(r.URL)
+				resp, err := http.Get(x.URL)
 				if err != nil {
 					ch <- Data{Error: err}
 					continue
 				}
-				ch <- Data{resp.Status, resp.Header.Get(r.Header), nil}
+				ch <- Data{resp.Status, resp.Header.Get(x.Header), nil}
 			}
 		}(ch)
 	}
@@ -157,7 +157,7 @@ func (r *XTop) run() {
 	// Collecting results from workers
 	for {
 		data := <-ch
-		r.TotalRequestsSent++
+		x.TotalRequestsSent++
 
 		if data.Error != nil {
 			// TODO collect errors
@@ -165,62 +165,62 @@ func (r *XTop) run() {
 		}
 
 		s := data.RespStatus
-		if _, exist := r.StatusMap[s]; exist {
-			r.StatusMap[s]++
+		if _, exist := x.StatusMap[s]; exist {
+			x.StatusMap[s]++
 		} else {
-			r.StatusMap[s] = 1
+			x.StatusMap[s] = 1
 		}
 
 		h := data.RespHeader
-		if _, exist := r.HeaderMap[h]; exist {
-			r.HeaderMap[h]++
+		if _, exist := x.HeaderMap[h]; exist {
+			x.HeaderMap[h]++
 		} else {
-			r.HeaderMap[h] = 1
+			x.HeaderMap[h] = 1
 		}
 	}
 }
 
-func (r *XTop) layout(*gocui.Gui) error {
-	maxX, maxY := r.G.Size()
-	if v, err := r.G.SetView("center", 3, 0, maxX, maxY); err != nil {
+func (x *XTop) layout(*gocui.Gui) error {
+	maxX, maxY := x.G.Size()
+	if v, err := x.G.SetView("center", 3, 0, maxX, maxY); err != nil {
 		if err != gocui.ErrorUnkView {
 			return err
 		}
 		v.Frame = false
-		r.display(v)
+		x.display(v)
 	}
 	return nil
 }
 
 // updateView runs in a goroutine to periodically print out results to the screen
 // it calls display() to actually print to a view
-func (r *XTop) updateView() {
+func (x *XTop) updateView() {
 	for {
 		time.Sleep(time.Second)
-		v, err := r.G.View("center")
+		v, err := x.G.View("center")
 		if err != nil {
 			panic(err)
 		}
 		v.Clear()
-		r.display(v)
-		r.G.Flush()
+		x.display(v)
+		x.G.Flush()
 	}
 }
 
 // display prints output to the view
-func (r *XTop) display(v io.Writer) error {
+func (x *XTop) display(v io.Writer) error {
 
-	output := fmt.Sprintf("Target: %s\n", r.URL)
-	output += fmt.Sprintf("Header: %s\n", r.Header)
-	output += fmt.Sprintf("Max concurrency: %d\n\n", r.Concurrency)
+	output := fmt.Sprintf("Target: %s\n", x.URL)
+	output += fmt.Sprintf("Header: %s\n", x.Header)
+	output += fmt.Sprintf("Max concurrency: %d\n\n", x.Concurrency)
 
 	// Response status
-	sorted := sortMapByValue(r.StatusMap)
+	sorted := sortMapByValue(x.StatusMap)
 	output += fmt.Sprintf("=== Response status ===\n")
 	for _, v := range sorted {
 		output += fmt.Sprintf("%6s %8s %s\n",
-			fmt.Sprintf("[%d%s]", v.Value*100/r.TotalRequestsSent, "%%"),
-			fmt.Sprintf("[%d/%d]", v.Value, r.TotalRequestsSent),
+			fmt.Sprintf("[%d%s]", v.Value*100/x.TotalRequestsSent, "%%"),
+			fmt.Sprintf("[%d/%d]", v.Value, x.TotalRequestsSent),
 			v.Key)
 	}
 	output += fmt.Sprintf("\n")
@@ -228,16 +228,16 @@ func (r *XTop) display(v io.Writer) error {
 	// Response header
 	a := []string{}
 
-	for k := range r.HeaderMap {
+	for k := range x.HeaderMap {
 		a = append(a, k)
 	}
 	sort.Strings(a)
 
-	output += fmt.Sprintf("=== Response header %s ===\n", r.Header)
+	output += fmt.Sprintf("=== Response header %s ===\n", x.Header)
 	for i, v := range a {
 		output += fmt.Sprintf("%6s %8s %3d %s\n",
-			fmt.Sprintf("[%d%s]", r.HeaderMap[v]*100/r.TotalRequestsSent, "%%"),
-			fmt.Sprintf("[%d/%d]", r.HeaderMap[v], r.TotalRequestsSent),
+			fmt.Sprintf("[%d%s]", x.HeaderMap[v]*100/x.TotalRequestsSent, "%%"),
+			fmt.Sprintf("[%d/%d]", x.HeaderMap[v], x.TotalRequestsSent),
 			i+1,
 			v)
 	}
